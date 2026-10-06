@@ -1,31 +1,41 @@
 #!/bin/bash
+#############################################################################
+# gen_custom_ops_fields.sh
+#
+# Regenerates custom_flds.h by querying the BRM data dictionary directly
+# via PCM_OP_SDK_GET_FLD_SPECS, instead of using Developer Center's
+# "Generate Custom Fields Source..." action. Then rebuilds the C (pcmc) and
+# Java (pcmjava) custom field bindings and jars.
+#
+# testnap is always run from $pin_home/sys/test (it needs pin.conf / cwd
+# context there to connect). The script cd's there to run testnap, then
+# switches to $pin_home/include for everything else, so it can be started
+# from any directory.
+#
+# Usage: ./gen_custom_ops_fields.sh <PIN_HOME>
+#############################################################################
 
 set -euo pipefail
 
 # Input check
-if [[ -z "$1" || ! -d "$1" ]]; then
-    echo "Parameter: $0 [\$PIN_HOME]"
+if [[ -z "${1:-}" || ! -d "$1" ]]; then
+    echo "Usage: $0 <PIN_HOME>" >&2
     exit 1
 fi
 
-pin_home=$1
+# Jars (pcm.jar) are kept only in the main CM, found via the PIN_HOME
+# environment variable; the CM given as argument may be a dev CM.
+if [[ -z "${PIN_HOME:-}" ]]; then
+    echo "ERROR: PIN_HOME environment variable is not set." >&2
+    exit 1
+fi
 
-#!/bin/bash
-#############################################################################
-# gen_custom_flds.sh
-#
-# Regenerates custom_flds.h by querying the BRM data dictionary directly
-# via PCM_OP_SDK_GET_FLD_SPECS, instead of using Developer Center's
-# "Generate Custom Fields Source..." action.
-#
-# Must be able to be invoked from $pin_home/include, but testnap itself
-# is always run from $pin_home/sys/test (it needs pin.conf / cwd context
-# there to connect). We cd there to run testnap, then come back.
-#
-# Usage: ./gen_custom_flds.sh   (run from $pin_home/include)
-#############################################################################
+# Resolve to an absolute path (the script cd's around)
+pin_home=$(cd "$1" && pwd)
 
-set -euo pipefail
+# Output helpers
+step() { echo; echo "=== [$1] $2"; }
+info() { echo "    $*"; }
 
 # ---------------- Configurable block ----------------
 TESTNAP_DIR="$pin_home/sys/test"
@@ -36,6 +46,7 @@ MAX_CUSTOM_FLD_NUM=99999       # adjust upper bound if you also want to exclude
                                 # storable-class-reserved ranges etc.
 FLD_PREFIX="LMT_FLD_"          # prefix used in the generated #defines
 RAW_OUTPUT="/tmp/gen_custom_flds_raw.$$.txt"
+CLASSPATH_JARS="$PIN_HOME/jars/pcm.jar:$PIN_HOME/jars/pcmext.jar"
 # ------------------------------------------------------
 
 cleanup() {
@@ -48,7 +59,8 @@ if [[ ! -d "$TESTNAP_DIR" ]]; then
     exit 1
 fi
 
-echo "Running PCM_OP_SDK_GET_FLD_SPECS via testnap in $TESTNAP_DIR ..."
+step "1/5" "Querying data dictionary (PCM_OP_SDK_GET_FLD_SPECS via testnap)"
+info "testnap dir: $TESTNAP_DIR"
 
 pushd "$TESTNAP_DIR" > /dev/null
 
@@ -65,15 +77,19 @@ cp "$RAW_OUTPUT" /tmp/raw_capture_debug.txt
 
 popd > /dev/null
 
+# From here on, always work in the include directory.
+cd "$OUTPUT_DIR"
+
 # testnap dumps flists with the RAW_OUTPUT file now containing
 # both the input echo (superOpcode debug lines don't appear here since
 # we're not in Dev Center) and the output PIN_FLD_FIELD array.
 # We just need lines from the response, so filter defensively:
 #   - PIN_FLD_FIELD_NUM   ENUM [0] <num>
 #   - PIN_FLD_FIELD_NAME  STR  [0] "<name>"
-# and pair them up, since they appear as consecutive lines per array element.
+#   - PIN_FLD_FIELD_TYPE  INT  [0] <type>
+# and group them per PIN_FLD_FIELD array element.
 
-echo "Parsing testnap output -> $OUTPUT_FILE"
+step "2/5" "Generating custom_flds.h from testnap output"
 
 # Strip any CRLF line endings defensively (SSH/terminal capture, or if
 # testnap output ever gets piped through something that adds \r) so
@@ -95,15 +111,12 @@ awk -v minnum="$MIN_CUSTOM_FLD_NUM" -v maxnum="$MAX_CUSTOM_FLD_NUM" -v prefix="$
 function emit() {
     if (have_num && have_name && fnum+0 >= minnum+0 && fnum+0 <= maxnum+0) {
         # Map numeric PIN_FLDT_* type codes to symbolic macro names.
-        # This mapping was reverse-derived and VERIFIED against your actual
-        # LMT dictionary: all 130 existing custom fields (10000-10129) in
-        # custom_flds.h were cross-checked against their live FIELD_TYPE
-        # codes from PCM_OP_SDK_GET_FLD_SPECS output, with zero conflicts.
-        # NOTE: codes 2 (UINT), 4 (BINSTR), 6 (BUF), 13 (ERR), 15 (TIME),
-        # 3 (ENUM, not STR) are textbook PIN_FLDT_* guesses that were NOT
-        # seen in your data and are unverified -- flagged UNKNOWN so any
-        # new field using them is caught for manual review rather than
-        # silently mis-typed.
+        # Verified against $PIN_HOME/include/pcm.h (PIN_FLDT_* defines) and
+        # against the existing custom fields in custom_flds.h.
+        # Codes not listed here (0 UNUSED, 2 UINT and 4 NUM are obsolete;
+        # 15 TIME and 16 TEXTBUF are private/opaque) are emitted as
+        # PIN_FLDT_UNKNOWN so any such field is caught for manual review
+        # rather than silently mis-typed.
         type_str = "PIN_FLDT_UNKNOWN"
         if (ftype == 1)       type_str = "PIN_FLDT_INT"
         else if (ftype == 3)  type_str = "PIN_FLDT_ENUM"
@@ -117,7 +130,7 @@ function emit() {
         else if (ftype == 12) type_str = "PIN_FLDT_BINSTR"
         else if (ftype == 13) type_str = "PIN_FLDT_ERR"
         else if (ftype == 14) type_str = "PIN_FLDT_DECIMAL"
-        else if (ftype == 17) type_str = "PIN_FLD_HEADER_NUM"
+        else if (ftype == 17) type_str = "PIN_FLDT_INT64"
 
         bare = fname
         sub(/^PIN_FLD_/, "", bare)
@@ -165,70 +178,48 @@ awk -F'[(), ]+' '
     }
 }' "$OUTPUT_FILE.tmp" | sort -k1,1n | cut -d' ' -f2- > "$OUTPUT_FILE.sorted"
 
-# Back up the existing header (if any) before overwriting, so a bad
-# parse/run never destroys the previous known-good file silently.
-# if [[ -f "$OUTPUT_FILE" ]]; then
-#     cp "$OUTPUT_FILE" "$OUTPUT_FILE.bak.$(date +%Y%m%d_%H%M%S)"
-# fi
-
 mv "$OUTPUT_FILE.sorted" "$OUTPUT_FILE"
 rm -f "$OUTPUT_FILE.tmp"
 
 COUNT=$(wc -l < "$OUTPUT_FILE")
-echo "Wrote $COUNT custom field #defines to $OUTPUT_FILE"
-# echo "Previous version (if any) backed up alongside it as .bak.<timestamp>"
-echo "Review before committing, e.g.:"
-# echo "  diff $OUTPUT_FILE $OUTPUT_FILE.bak.* | tail"
-echo " "
-echo " "
-echo " "
+info "Wrote $COUNT custom field #defines to $OUTPUT_FILE"
 
-
+step "3/5" "Building custom_ops_flds.h and C bindings (pcmc)"
 if [[ -f "custom_ops.h" ]]; then
     cp custom_ops.h custom_ops_flds.h
     echo ' ' >> custom_ops_flds.h
     echo ' ' >> custom_ops_flds.h
     cat custom_flds.h >> custom_ops_flds.h
+    info "custom_ops_flds.h = custom_ops.h + custom_flds.h"
 else
     cp custom_flds.h custom_ops_flds.h
+    info "custom_ops_flds.h = custom_flds.h (no custom_ops.h found)"
 fi
 dos2unix custom_ops_flds.h
-
 parse_custom_ops_fields.pl -L pcmc -I custom_ops_flds.h -O custom_ops_flds
-echo ''
 
-
-echo 'Updating customfields/'
-cd $pin_home/include
+step "4/5" "Rebuilding customfields/ (Java)"
 rm -rf customfields/*
 parse_custom_ops_fields.pl -L pcmjava -I custom_ops.h -O customfields
 parse_custom_ops_fields.pl -L pcmjava -I custom_flds.h -O customfields -P customfields
-echo ''
-cd $pin_home/include/customfields
-javac -d  . *.java -classpath ${PIN_HOME}/jars/pcm.jar:${PIN_HOME}/jars/pcmext.jar
-echo ''
-jar -cvf CustomFields.jar customfields/*.class CustomOp.class
-echo ''
+cd "$OUTPUT_DIR/customfields"
+javac -d . *.java -classpath "$CLASSPATH_JARS"
+jar -cf CustomFields.jar customfields/*.class CustomOp.class
+info "Created $OUTPUT_DIR/customfields/CustomFields.jar"
+cd "$OUTPUT_DIR"
 
-echo 'Updating customfieldswsm/'
-cd $pin_home/include
+step "5/5" "Rebuilding customfieldswsm/ (Java, web services)"
 rm -rf customfieldswsm/*
-echo ''
 parse_custom_ops_fields.pl -L pcmjava -I custom_ops_flds.h -O customfieldswsm -P com.portal.jax.custom
-echo ''
-cd $pin_home/include/customfieldswsm
-javac -d . *.java -classpath ${PIN_HOME}/jars/pcm.jar:${PIN_HOME}/jars/pcmext.jar
-echo ''
-jar -cvf CustomFields.jar com/portal/jax/custom/*.class
-echo ''
+cd "$OUTPUT_DIR/customfieldswsm"
+javac -d . *.java -classpath "$CLASSPATH_JARS"
+jar -cf CustomFields.jar com/portal/jax/custom/*.class
+info "Created $OUTPUT_DIR/customfieldswsm/CustomFields.jar"
+cd "$OUTPUT_DIR"
 
-# echo 'Restarting CM'
-# echo "Stopping CM..."
-# ${pin_home}/bin/stop_cm
-# # rm -f ${pin_home}/var/cm/cm.pinlog 
-# # echo "cm.pinlog removed!!!" 
-# echo "Starting CM..." 
-# ${pin_home}/bin/start_cm
+# Restart the CM manually (or uncomment) for the new fields to take effect.
+# "$pin_home/bin/stop_cm"
+# "$pin_home/bin/start_cm"
 
-
-cd $pin_home/include
+echo
+echo "=== Done. Review $OUTPUT_FILE before committing."
