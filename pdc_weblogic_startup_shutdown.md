@@ -68,6 +68,7 @@ Start the RRE Transformer:
 pbin
 ./startRRETransformer
 # enter the password when prompted
+# password: Brm12000
 # press Ctrl-Z to suspend the process
 bg
 disown -h
@@ -78,6 +79,7 @@ Then start the BRE Transformer:
 ```bash
 ./startBRETransformer
 # enter the password when prompted
+# password: Brm12000
 # press Ctrl-Z to suspend the process
 bg
 disown -h
