@@ -34,6 +34,7 @@ Disk layout matters here: `/u01` and `/u02` are directories on the **root** file
 | 04 | [BRM server install](04-brm-server-install.md) | Media, the installer, the Installation Location trap, answer sheet, uninstall |
 | 05 | [Post-installation and verification](05-postinstall-and-verification.md) | `pin_setup`, the wallet/`sqlnet.ora` blocker, shell environment, sanity check |
 | 06 | [Troubleshooting](06-troubleshooting.md) | Every failure hit during this build, symptom first |
+| 07 | [Pipeline Manager (IFW) install](07-pipeline-manager-install.md) | Custom install, `ORA-01031` on the system user, the password that broke the schema, manual schema build, environment (`libportal.so`, `IFW_EVENTHANDLER_PORT`), first start, sample CDR test |
 
 ## Read this first
 

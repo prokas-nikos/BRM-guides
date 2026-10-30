@@ -156,6 +156,37 @@ pin_virtual_time -m 0
 ### `pin_setup`: "Change your username to pin and restart the script"
 `pin_setup` requires the OS user to be literally named `pin`. Not configurable.
 
+## Pipeline Manager
+
+### Installer: `ORA-01031` on the "Pipeline Database System User Details" window
+The installer connects the system user `as sysdba`. `grant sysdba to system;` in PDB1. See
+[guide 07](07-pipeline-manager-install.md).
+
+### `ifw_Create.log`: `ORA-01017` then `ORA-12162`
+Not a login or TNS problem. Look at `database/Oracle/Scripts/createDBUser.log` first:
+`ORA-00922: missing or invalid option` means the `ifw` password contains a character the script's
+unquoted `identified by &1` cannot take, so `ifw` was never created. See
+[guide 07](07-pipeline-manager-install.md).
+
+### `SP2-0768: Illegal SPOOL command` showing `spool offspool ...`
+Two pasted lines got joined. The old spool stays open and later output lands in the wrong log.
+Type spool commands one at a time.
+
+### `ifw: error while loading shared libraries: libportal.so`
+`/app/pin/BRM/lib` is missing from `LD_LIBRARY_PATH`. Source **both** `$PIN_HOME/source.me.sh` and
+`/app/pin/ifw/source.me.sh` from `~/.bashrc`, without a "load once" guard, then log out and back in.
+See [guide 07](07-pipeline-manager-install.md#environment).
+
+### `Error: IFW_EVENTHANDLER_PORT not set in environment, cannot proceed.`
+The installer never sets it. Add `IFW_EVENTHANDLER_PORT=26000` + `export IFW_EVENTHANDLER_PORT` to
+`/app/pin/ifw/source.me.sh` (any free port, one per running `ifw`). See
+[guide 07](07-pipeline-manager-install.md#environment).
+
+### Test CDR "disappears", nothing in `data/out` or `data/reject`
+It was processed in about a second. Check `log/stream/Stream_<file>.log`. The shipped
+`test_cdr.orig` is dated 2000, so every call is `discarded by 'Old Calls > 180 days'` and the
+empty output files are deleted. That is a pass.
+
 ## Host (`brmdb`, Lenovo Z50-75)
 
 ### No IP address after `dnf update` + reboot
